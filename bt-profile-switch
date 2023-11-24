@@ -1,0 +1,112 @@
+#!/bin/bash
+
+BN=$(basename $0)
+
+# Read Default sink and sink JSON info
+PA_DEF_SINK=$(pactl -f json get-default-sink)
+JS_SINK=$(pactl -f json list | jq -r --arg sink ${PA_DEF_SINK} '.sinks[] | select(.name==$sink)')
+
+# Distill properties from JSON info
+BT_DEV_NAME=$(echo "${JS_SINK}" | jq -r '.properties."device.name"')
+BT_ADDR=$(echo "${JS_SINK}" | jq -r '.properties."api.bluez5.address"')
+BT_DESC=$(echo "${JS_SINK}" | jq -r '.description')
+BT_PROFILE=$(pactl -f json list | jq -r --arg card ${BT_DEV_NAME} '.cards[] | select(.name==$card) | .active_profile')
+declare -A MODES_BTPROF=(["music"]="a2dp-sink" ["talk"]="headset-head-unit")
+declare -A MODES_ICON=(["music"]="music" ["talk"]="voice")
+
+function errorend() {
+  if [[ -n "${1}" ]] ; then
+    echo -e "\033[31;1mError: ${1}\033[0m"
+    echo
+  fi
+  echo "Usage: ${BN} [-v] [-m <mode>] [-n] [-h]"
+  echo
+  echo "  Changes audio profile for default audio output device, if it's a Bluetooth device."
+  echo
+  echo "  Parameters:"
+  echo "    -v  Verbose output"
+  echo "    -m  Change mode (profile) to music (a2dp-sink), or talk (headset-head-unit)"
+  echo "    -n  Send notifications to Gnome-Shell, using notify-send"
+  echo "    -h  Show this help and exit immediately"
+  echo
+  echo "  Note: When mode '-m' is omitted, the profile will swich between the two modes"
+
+  [[ -n "${1}" ]] && exit 1 || exit 0 
+}
+
+function switchmode() {
+  if echo "${BT_PROFILE}" | grep -qxi 'a2dp-sink.*' ; then
+    echo "headset-head-unit"
+    MODE_VIS=talk
+  else
+    echo "a2dp-sink"
+    MODE_VIS=music
+  fi
+}
+
+VERBOSE=false
+NOTIFY=false
+FMODE=''
+while getopts ':vm:nh' opt ; do
+  case ${opt} in
+    v )
+        VERBOSE=true
+        ;;
+    m ) 
+        if echo "${OPTARG}" | grep -xiq 'music\|talk' ; then
+          FMODE="${OPTARG}"
+        else
+          errorend "Invalid mode option, try 'music', or 'talk'"
+        fi
+        ;;
+    n )
+        NOTIFY=true
+        ;;
+    h )
+        errorend
+        ;;
+    * )
+        errorend "Invalid parameter '${OPTARG}'."
+        ;;
+  esac
+done
+
+if [[ -z ${FMODE} ]] ; then
+  if echo "${BT_PROFILE}" | grep -qxi "${MODES_BTPROF['talk']}.*" ; then
+    MODE=music
+  else
+    MODE=talk
+  fi
+else
+  MODE=${FMODE}
+fi
+
+if ${VERBOSE} ; then
+  echo "-----------------------------------------------------"
+  echo "                    Device Name: ${BT_DEV_NAME}"
+  echo "              Bluetooth address: ${BT_ADDR}"
+  echo "             Device Description: ${BT_DESC}"
+  echo "         PuseAudio Default sink: ${PA_DEF_SINK}"
+  echo "Default Bluetooth audio profile: ${BT_PROFILE}"
+  echo "-----------------------------------------------------"
+fi
+
+if [[ "${BT_ADDR}" == "null" ]] ; then
+  if ${NOTIFY} ; then
+    notify-send -u normal -c sound -a Bluetooth-Sound -t 3000 -e -i error "Default sound output device is not a Bluetooth device"
+  fi
+  errorend "Device '${BT_DESC}' is not a Bluetooth device."
+fi
+
+if [[ -z ${FMODE} ]] ; then
+  echo "Switching mode to ${MODE}"
+else
+  echo "Force mode to ${MODE}"
+fi
+
+
+if ${NOTIFY} ; then
+  notify-send -u normal -c sound -a Bluetooth-Sound -t 3000 -e -i ${MODES_ICON[${MODE}]} "${BT_DESC}: ${MODE} $([[ -z ${FMODE} ]] || echo '(forced)')"
+fi
+
+pactl set-card-profile ${BT_DEV_NAME} ${MODES_BTPROF[${MODE}]}
